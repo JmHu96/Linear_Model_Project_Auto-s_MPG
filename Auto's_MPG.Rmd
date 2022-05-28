@@ -1,0 +1,1085 @@
+---
+title: "343_Data_Analysis_Project"
+author: 
+  - "Jiaming Hu"
+  - "Anqu Yu"
+date: "12/2/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(faraway)
+```
+
+# 1. Data Preparation
+
+Let's first read the data. 
+```{r}
+require(MASS)
+auto <- read.table("auto.txt", header = TRUE)
+dim(auto)
+summary(auto)
+```
+
+We need to tell `R` which groups of covariates are numerical and which are categorical,
+as most of the entries are characters in the summary shown above. According to the information provided, we know the properties of these covariates. we should change them into numbers or factors. Here is some steps to make clear whether every covariate is a categorical or numerical, according to the data description provided. For better dealing with the data, we will replace all the "?" missing data with ``NA` so that `R` can know they are missing. 
+
+
+```{r}
+# put indecies of numeric or categorical covariates together for convenience
+categorical <- c(1,2,8,9,10,11,12,13,14)
+cate_var <- colnames(auto)[categorical]
+numerical <- c(3,4,5,6,7,15,16,17,18,19,20,21)
+numerical_var <- colnames(auto)[numerical]
+
+# convert "?" into NA as it is easier to deal with in R
+for(i in 1:dim(auto)[1]){
+  for(j in 1:dim(auto)[2]){
+    if(auto[i,j]=="?"){
+      auto[i,j] <- NA
+    }
+  }
+}
+
+# change classification of entries
+for(i in 1:length(categorical)){
+  auto[,categorical[i]] <- as.factor(auto[,categorical[i]])
+}
+for(i in 1:(length(numerical))){
+  auto[,numerical[i]] <- as.numeric(auto[,numerical[i]])
+}
+```
+
+Let's check the data summary again and look at distribution.
+
+```{r, echo=FALSE}
+summary(auto)
+
+# check histogram
+par(mfrow=c(3,3))
+#response
+hist(auto$highway_mpg, main="highway_mpg")
+# potential predictors (continuous)
+hist(auto$wheel_base, main="wheel_base")
+hist(auto$length, main="length")
+hist(auto$width, main="width")
+hist(auto$height, main="height")
+hist(auto$curb_weight, main="curb_weight")
+hist(auto$engine_size, main="engine_size")
+hist(auto$bore, main="bore")
+hist(auto$stroke, main="stroke")
+hist(auto$compression_rate, main="compression_rate")
+hist(auto$peak_rpm, main="peak_rpm")
+hist(auto$horsepower, main="horsepower")
+hist(auto$normalized_losses, main="normalized_losses")
+```
+
+The continuous data distributions look fine. The `wheel_base`, `horsepower`, `ompassion_rate` and `normalized_losses` are a little skewed, we should keep this in mind in later steps, and consider transformation if necessary. Also notice that there are small numbers of missing data in several covariates, and a lot of missing data in `normalized_losses`. We will deal with this in next section. 
+
+
+\pagebreak
+
+# 2. Dealing with Collinearity and Missing Data
+
+Since we have missing values, we need to deal with them before we do any analysis.
+Let's first see the number of samples that have missing data, with respect to
+each covariates.
+
+```{r}
+colSums(is.na(auto))
+```
+
+We can see that `num_of_doors`, `bore`, `stroke`, `peak_rpm`, `horsepower` and `normalized_losses` have missing data. Observe that besides `normalized_losses`, other covariates that have missing values are only missing in a relatively small number of entries, relative to sample size, since we have 201 sample, so we can simply delete those samples. As for `normalized_losses`, we first try imputation by mean because deleting ~20% (41) of the sample is not ideal.
+
+```{r}
+index <- NULL
+for(i in 1:dim(auto)[1]){
+  for(j in 1:20){
+    if(is.na(auto[i,j])){
+      index <- c(index,i)
+    }
+  }
+}
+index <- unique(index)
+length(index)
+```
+
+So we only have 8 samples to delete, this is acceptable. Now look at `normalized_losses`, which has 41 missing entries.
+
+```{r}
+auto <- auto[-index,]
+colSums(is.na(auto))
+
+# find the indeces of entries with missing normalized_losses
+index_imp <- NULL
+for(i in 1:dim(auto)[1]){
+  for(j in 1:21){
+    if(is.na(auto[i,j])){
+      index_imp <- c(index_imp,i)
+    }
+  }
+}
+index_imp <- unique(index_imp)
+# make a subset data without any missing data or imputed data
+subset_auto <- auto[-index_imp, ]
+```
+
+We have 38 samples missing the `normalized_losses` entries. Either imputing the mean or regression should be applied in this case, but since we have 21 covariates, imputing with regression may be time-consuming and not feasible. After consideration, we decide to check the collinearity of the numerical variables before doing any imputation for `normalized_losses`. Since the variables are all related to cars, many of them might have correlations. 
+
+```{r}
+round(cor(auto[numerical],use="complete.obs"),3)
+```
+
+There are some interesting things to note: (1) the covariate needs imputing, `normalized_losses`, seems to have little correlation with other numerical variables, with only one correlation larger than 0.4. (2) there is obvious collinearity among more than one covariates, which we should check further. 
+
+```{r}
+par(mfrow=c(2,2))
+plot(auto$wheel_base, auto$length)
+plot(auto$wheel_base, auto$width)
+plot(auto$wheel_base, auto$height)
+plot(auto$wheel_base, auto$curb_weight)
+```
+
+`wheel_base` has correlation with four other covariates, so we will remove it when modeling. 
+
+```{r}
+par(mfrow=c(2,2))
+plot(auto$length, auto$width)
+plot(auto$length, auto$height)
+plot(auto$length, auto$curb_weight)
+
+
+plot(auto$width, auto$curb_weight)
+plot(auto$width, auto$engine_size)
+
+plot(auto$curb_weight, auto$engine_size)
+```
+
+Similarly, some other covariates show positive correlation with each other. What we are showing here is a severe multi-collinearity issue among `wheel_base`, `length`, `width`, `curb_weight`,`height`. We will pay attention to this issue when doing regression.
+
+```{r}
+hist(auto$normalized_losses, main="normalized_losses", breaks=40, xlim=c(65,256))
+```
+
+Another thing worth to note is that `normalized_losses` only has obvious correlationship with `height`. Also, the histogram of `normalized_losss` looks a little skewed, with a large range and some extreme values. Imputing with mean may not be ideal for this data, but we will first impute by mean and proceed to modeling, then go back and check if necessary.
+
+```{r}
+nl_mean <- mean(as.numeric(na.omit(auto[,21])))
+for(i in 1:dim(auto)[1]){
+  if(is.na(auto[i,21])){
+    auto[i,21] <- nl_mean
+  }
+}
+```
+
+
+\pagebreak
+
+# 3. Initial Regression
+
+```{r}
+# an initial model with all covariates without interaction
+auto$normalized_losses <- as.numeric(auto$normalized_losses)
+lmod <- lm(highway_mpg~make+fuel_type+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses+height+wheel_base
+           +length+width+height+curb_weight,auto)
+round(summary(lmod)$coefficients[45:55,],3)
+```
+
+**Missing data (again) in normalized_losses**
+
+As we can see in the summary, `the normalized_losses` is not a significant covariate. We should look more on this, because if it is truly not significantly affecting the response, we do not need to try imputing with regression. 
+
+```{r}
+lmod_less_data <- lm(highway_mpg~., data = subset_auto)
+summary(lmod_less_data)$coefficient[42:49,]
+```
+
+We can see that `normalized_losses` does not have a significant coefficient even without any imputed data and the estimate is very small. Although there is a small chance that all the missing entries can explain the effect of this term on the response, it is not practical for us to impute it and trust the data (if it changes with imputed regression entries). Also, `normalized_losses` is a quantitative measure of how much insurance companies pay for losses on this car. It is reasonable that it has almost nothing to do with miles-per-gallon performance. Therefore we will no longer discuss on the missing data issue, but keep the imputation with the mean and focus on optimizing the model. 
+
+**Collinearity**
+
+Addressing the collinearity issue mentioned in the first part, we will only keep `curb_weight` out of the 5 correlated covariates (`wheel_base`, `length`, `width`, `curb_weight`, `height`) because it is the most significant in terms of p-values. 
+
+```{r}
+lmod1 <- lm(highway_mpg~make+fuel_type+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses+curb_weight, auto)
+round(summary(lmod1)$coefficients[45:51,],3)
+anova(lmod1)
+```
+
+**Residual plot**
+
+Lets see plots of fitted value vs residuals plot.
+
+```{r, out.width="60%"}
+plot(lmod1$fitted.values, lmod$residuals, main="Fitted vs Residual")
+abline(h = 0, lty=2)
+```
+
+We perhaps can see a little bit of curvature and appearance of non-constant variance.
+There are two outliers, perhaps leverage points on top of the plot, and 3 on the
+bottom of the plot. We can use studentized residual and leverage score to see
+if they need to be deleted later. Also, it might be the case which we have
+more negative residuals than positive residuals. This mayy suggest we should do transformation as well. 
+
+Let's see categorical variable vs residual plots.
+
+```{r}
+par(mfrow=c(2,2))
+plot(as.numeric(auto$make),lmod1$res,xlab='make')
+plot(as.numeric(auto$fuel_type),lmod1$res,xlab='fuel_type')
+plot(as.numeric(auto$num_of_doors),lmod1$res,xlab='num_of_doors')
+plot(as.numeric(auto$body_style),lmod1$res,xlab='body_style')
+plot(as.numeric(auto$drive_wheels),lmod1$res,xlab='drive_wheels')
+plot(as.numeric(auto$num_of_cylinders),lmod1$res,xlab='num_of_cylinders')
+plot(as.numeric(auto$aspiration),lmod1$res,xlab='aspiration')
+```
+
+The residuals vs categorical covariate plots show some non-constant variant issue, but at this point we cannot tell whether the large variance in some covariates (e.g.`num_of_cylinders`) is because of large sample size at specific levels, or it is really a non-constant variance issue. Keeping this in mind, let's now see the residual plots against continuous covariates.
+
+```{r}
+par(mfrow=c(2,2))
+plot(as.numeric(auto$curb_weight),lmod1$res,xlab='curb_weight')
+plot(as.numeric(auto$stroke),lmod1$res,xlab='stroke')
+plot(as.numeric(auto$compression_rate),lmod1$res,xlab='compression_rate')
+plot(as.numeric(auto$bore),lmod1$res,xlab='bore')
+plot(as.numeric(auto$peak_rpm),lmod1$res,xlab='peak_rpm')
+plot(as.numeric(auto$horsepower),lmod1$res,xlab='horsepower')
+plot(as.numeric(auto$normalized_losses),lmod1$res,xlab='normalized_losses')
+```
+Several issues here: (1) non-constant variance showing with all five covariates; (2) `Compression_rate` has two clusters. Since we have removed collinear covariates, we need to check for outliers and high-leverage points, then remove non-significant covariates, try seperate clusters of `compression_rate` if possible, and also try transforming data.
+
+\pagebreak
+
+# 4. Diagnosis
+
+**Outliers**
+
+There are 2 values which contains NA in their studentized residuals, we can simply
+choose to omit them as the size of them is relatively small. 
+
+```{r}
+# any outliers?
+
+max(abs(na.omit(studres(lmod1))))
+threshold <- qt(1-0.05/2/(dim(auto)[1]-6),df=lmod1$df[1])
+threshold
+
+# how many NA's
+sum(is.na(abs(studres(lmod1))))
+
+# There are 7 NA in studentized residuals, let's observe why it is the case or
+# whether we need to worry about those two points
+
+na.index <- as.numeric(which(is.na(studres(lmod1))))
+lmod1$residuals[na.index]
+
+
+# We can see it is possibly because the residuals are too small so when we use
+# the formula in studentized residuals, they underflow. Hence we do not need to
+# worry about those two points when detecting outliers.
+outlier <- as.numeric(which(abs(studres(lmod1))>threshold))
+outlier
+```
+
+**Leverage Point**
+
+Note here we use `hatvalues()` function to calculate the leverage score because
+our matrix model is singular. So we will use this instead of using the method
+that involves `t(x)%*%x`, but they serve the same purpose nontheless. 
+We will investigate this problem in details when removing
+covariates (we put it in this order because it is more natural to solve it
+later instead of now, because it involves using F-test to compare models.)
+
+```{r, out.width="60%"}
+plot(lmod1$fit,lmod1$res,cex=10*hatvalues(lmod1))
+halfnorm(hatvalues(lmod1), ylab="Leverage", nlab=3)
+```
+
+We can see that in the first plot, the points at top and the points at bottom have low leverage score. This is good because we do not have to worry too much about them as high-leverage points. In the case that they are outliers, we had already calculated above, and found the outlier observations are #30 and #153. 
+
+On the half-norm plot of hatvalues, there are seven points with very high leverage. Look further:
+
+```{r}
+hatv <- hatvalues(lmod1)
+hatv[c(120,124,70)]
+# check these observations and their entries for continuous covariates
+auto[c(120,124,70), c(22,7,17,18,19,21)]
+```
+
+Checking their means with the sample means, these entries look fine, without obvious extreme values. So we will keep them here for now. Before moving toward next steps, we will 
+
+```{r}
+# remove outliers
+auto <- auto[-outlier,]
+
+# fit the model again
+lmod1_original <- lm(highway_mpg~curb_weight+make+fuel_type+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+plot(lmod1_original$fit,lmod1_original$res)
+abline(h = 0, lty=2)
+```
+
+We can see the two points on the top has been removed. The residual plot looks better, although the residuals still show some non-constant variance issue. 
+
+**Q-Q plot**
+
+```{r}
+plot(lmod1_original, which=2); shapiro.test(lmod1_original$residuals)
+```
+
+The Q-Q plot here suggests that our model is not following normal distribution assumption well, and the Shapiro normality test suggests the violation of normal distribution. Since the normality assumption is not holding, we should transform covariates after removing non-significant covariates.
+
+**Conclusion after initial regression before transformation**
+(1) 2 potential outliers at bottom of residual points
+(2) 1 potential leverage point to with large x value
+(3) There is appearance of non-constant variance
+(4) Violation in normality assumption
+(5) `num_of_cylinder` seems to be ordinal, maybe we could treat it as quantitative variable
+(6) Need to reduce model size and add interaction term if necessary
+
+# 5. Remove non-significant Covariates (Backward Elimination)
+
+```{r}
+round(summary(lmod1_original)$coef[22:51,4],3)
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+fuel_type+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.fuel_type <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_doors <- lm(highway_mpg~curb_weight+make+fuel_type+
+              body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.body_style <- lm(highway_mpg~curb_weight+make+fuel_type+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.drive_wheels <- lm(highway_mpg~curb_weight+make+fuel_type+
+              num_of_doors+body_style+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+fuel_type+
+              num_of_doors+body_style+drive_wheels+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.engine_type <- lm(highway_mpg~curb_weight+make+fuel_type+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+fuel_type+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+fuel_type+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+
+# check the performance of these models
+round(anova(lmod1_original,no.make)$Pr[2],3)
+round(anova(lmod1_original,no.fuel_type)$Pr[2],3)
+round(anova(lmod1_original,no.num_of_doors)$Pr[2],3)
+round(anova(lmod1_original,no.body_style)$Pr[2],3)
+round(anova(lmod1_original,no.drive_wheels)$Pr[2],3)
+round(anova(lmod1_original,no.num_of_cylinders)$Pr[2],3)
+round(anova(lmod1_original,no.engine_type)$Pr[2],3)
+round(anova(lmod1_original,no.fuel_system)$Pr[2],3)
+round(anova(lmod1_original,no.aspiration)$Pr[2],3)
+```
+
+We can see an `NA` value in fuel_type. This indicates fuel_type is perfectly
+correlated with some combination of other covariates. We can see it from the F-test
+below.
+
+```{r}
+anova(lmod1_original,no.fuel_type)
+```
+
+We can see there is no difference in the model, so we exclude `fuel_type` from
+the model.
+
+After deleting `fuel_type`, we just repeat what we did above, at each step we
+exclude the one categorical covarite which has the highest p-value from our regression model.
+The results are here, with all the steps and codes hidden.
+
+```{r, echo=FALSE}
+lm_new <- lm(highway_mpg~make+num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses+curb_weight, auto)
+round(summary(lm_new)$coef[45:51,4],3)
+
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_doors <- lm(highway_mpg~curb_weight+make+
+              body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.body_style <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.drive_wheels <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+num_of_cylinders+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+
+              engine_type+fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.engine_type <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+aspiration+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+stroke+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+
+# check the performance of these models
+round(anova(lm_new,no.make)$Pr[2],3)
+round(anova(lm_new,no.num_of_doors)$Pr[2],3)
+round(anova(lm_new,no.body_style)$Pr[2],3)
+round(anova(lm_new,no.drive_wheels)$Pr[2],3)
+round(anova(lm_new,no.num_of_cylinders)$Pr[2],3)
+round(anova(lm_new,no.engine_type)$Pr[2],3)
+round(anova(lm_new,no.fuel_system)$Pr[2],3)
+round(anova(lm_new,no.aspiration)$Pr[2],3)
+```
+
+Remove `stroke`
+
+```{r, echo=FALSE}
+lm_new <- lm(highway_mpg~make+num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses+curb_weight, auto)
+round(summary(lm_new)$coef[45:50,4],3)
+
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_doors <- lm(highway_mpg~curb_weight+make+
+              body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.body_style <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.drive_wheels <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.engine_type <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+body_style+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+
+# check the performance of these models
+round(anova(lm_new,no.make)$Pr[2],3)
+round(anova(lm_new,no.num_of_doors)$Pr[2],3)
+round(anova(lm_new,no.body_style)$Pr[2],3)
+round(anova(lm_new,no.drive_wheels)$Pr[2],3)
+round(anova(lm_new,no.num_of_cylinders)$Pr[2],3)
+round(anova(lm_new,no.engine_type)$Pr[2],3)
+round(anova(lm_new,no.fuel_system)$Pr[2],3)
+round(anova(lm_new,no.aspiration)$Pr[2],3)
+```
+Remove `body_style`
+
+
+
+```{r, echo=FALSE}
+lm_new <- lm(highway_mpg~make+num_of_doors+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses+curb_weight, auto)
+round(summary(lm_new)$coef[41:46,4],3)
+
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_doors <- lm(highway_mpg~curb_weight+make+
+              drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.drive_wheels <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+num_of_cylinders+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+
+              engine_type+fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.engine_type <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              engine_type+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              engine_type+fuel_system+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+
+# check the performance of these models
+round(anova(lm_new,no.make)$Pr[2],3)
+round(anova(lm_new,no.num_of_doors)$Pr[2],3)
+round(anova(lm_new,no.drive_wheels)$Pr[2],3)
+round(anova(lm_new,no.num_of_cylinders)$Pr[2],3)
+round(anova(lm_new,no.engine_type)$Pr[2],3)
+round(anova(lm_new,no.fuel_system)$Pr[2],3)
+round(anova(lm_new,no.aspiration)$Pr[2],3)
+```
+Remove `engine_type`
+
+
+```{r, echo=FALSE}
+lm_new <- lm(highway_mpg~make+num_of_doors+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses+curb_weight, auto)
+round(summary(lm_new)$coef[37:42,4],3)
+
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_doors <- lm(highway_mpg~curb_weight+make+
+              drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.drive_wheels <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              aspiration+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              fuel_system+compression_rate+bore+
+              peak_rpm+horsepower+normalized_losses, auto)
+
+# check the performance of these models
+round(anova(lm_new,no.make)$Pr[2],3)
+round(anova(lm_new,no.num_of_doors)$Pr[2],3)
+round(anova(lm_new,no.drive_wheels)$Pr[2],3)
+round(anova(lm_new,no.num_of_cylinders)$Pr[2],3)
+round(anova(lm_new,no.fuel_system)$Pr[2],3)
+round(anova(lm_new,no.aspiration)$Pr[2],3)
+```
+Remove `normalized_losses`
+
+
+```{r, echo=FALSE}
+lm_new <- lm(highway_mpg~make+num_of_doors+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+curb_weight, auto)
+round(summary(lm_new)$coef[37:41,4],3)
+
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.num_of_doors <- lm(highway_mpg~curb_weight+make+
+              drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.drive_wheels <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+
+              num_of_doors+drive_wheels+num_of_cylinders+
+              fuel_system+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+
+# check the performance of these models
+round(anova(lm_new,no.make)$Pr[2],3)
+round(anova(lm_new,no.num_of_doors)$Pr[2],3)
+round(anova(lm_new,no.drive_wheels)$Pr[2],3)
+round(anova(lm_new,no.num_of_cylinders)$Pr[2],3)
+round(anova(lm_new,no.fuel_system)$Pr[2],3)
+round(anova(lm_new,no.aspiration)$Pr[2],3)
+```
+Remove `num_of_doors`
+
+
+```{r, echo=FALSE}
+lm_new <- lm(highway_mpg~make+drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+curb_weight, auto)
+round(summary(lm_new)$coef[36:40,4],3)
+
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+
+              drive_wheels+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.drive_wheels <- lm(highway_mpg~curb_weight+make+
+              num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+
+              drive_wheels+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+
+              drive_wheels+num_of_cylinders+
+              aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+
+              drive_wheels+num_of_cylinders+
+              fuel_system+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+
+# check the performance of these models
+round(anova(lm_new,no.make)$Pr[2],3)
+round(anova(lm_new,no.drive_wheels)$Pr[2],3)
+round(anova(lm_new,no.num_of_cylinders)$Pr[2],3)
+round(anova(lm_new,no.fuel_system)$Pr[2],3)
+round(anova(lm_new,no.aspiration)$Pr[2],3)
+```
+Remove `drive_wheels`
+
+```{r, echo=FALSE}
+lm_new <- lm(highway_mpg~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower+curb_weight, auto)
+round(summary(lm_new)$coef[34:38,4],3)
+
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+
+              num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+
+              num_of_cylinders+
+              aspiration+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+
+              num_of_cylinders+
+              fuel_system+compression_rate+bore+
+              peak_rpm+horsepower, auto)
+
+# check the performance of these models
+round(anova(lm_new,no.make)$Pr[2],3)
+round(anova(lm_new,no.num_of_cylinders)$Pr[2],3)
+round(anova(lm_new,no.fuel_system)$Pr[2],3)
+round(anova(lm_new,no.aspiration)$Pr[2],3)
+```
+```{r}
+cor(auto$horsepower, auto$bore)
+```
+
+
+Since backward elimination tends overestimate the significance of estimators,
+and `horsepower` has its coefficient very close to 0.05, and `horsepower` has positive correlation with `bore`,
+we will remove it. If thereis any problem with the model, we can add it back.
+
+remove `horsepower`
+
+```{r, echo=FALSE}
+lm_new <- lm(highway_mpg~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+curb_weight, auto)
+round(summary(lm_new)$coef[34:37,4],3)
+
+# make all the models removing categorical covariates one by one
+no.make <- lm(highway_mpg~curb_weight+
+              num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm, auto)
+no.num_of_cylinders <- lm(highway_mpg~curb_weight+make+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm, auto)
+no.fuel_system <- lm(highway_mpg~curb_weight+make+
+              num_of_cylinders+
+              aspiration+compression_rate+bore+
+              peak_rpm, auto)
+no.aspiration <- lm(highway_mpg~curb_weight+make+
+              num_of_cylinders+
+              fuel_system+compression_rate+bore+
+              peak_rpm, auto)
+
+# check the performance of these models
+round(anova(lm_new,no.make)$Pr[2],3)
+round(anova(lm_new,no.num_of_cylinders)$Pr[2],3)
+round(anova(lm_new,no.fuel_system)$Pr[2],3)
+round(anova(lm_new,no.aspiration)$Pr[2],3)
+```
+
+We can see we still have every other coefficients been less than 0.05.
+
+
+The order of removal of covariates are as follows: 
+`stroke`;
+`body_style`;
+`engine_type`;
+`normalized_losses`;
+`num_of_doors`;
+`drive_wheels`;
+`horsepower`
+
+The resulting model is as follows:
+```{r echo=FALSE}
+lmod_oneway <- lm_new
+round(summary(lmod_oneway)$coefficient[33:37,],3)
+anova(lmod_oneway)
+```
+
+
+Running F-test to see if the data favors the simpler model:
+```{r}
+anova(lmod1_original,lmod_oneway)
+```
+
+We can see that the p-value for F-test is much larger than 0.05, thus the data
+favors the simpler model. 
+
+# Residual Plots
+```{r}
+plot(lmod_oneway$fitted.values,lmod_oneway$residuals, main="Fitted vs Residual")
+abline(h = 0, lty=2)
+```
+
+```{r}
+X <- model.matrix(lmod_oneway)
+H <- hatvalues(lmod_oneway)
+halfnorm(H, nlab=5, main="leverage")
+plot(lmod_oneway, which =2)
+shapiro.test(lmod_oneway$residuals)
+```
+
+We see a similar residual plot as in the initial regression. This is a good indication
+because we did not introduce problems into the model by removing non-significant covariates. 
+Note that the normality assumption still doesn't hold. 
+
+Let's now see the residual plots against continuous covariates.
+
+```{r}
+par(mfrow=c(2,2))
+plot(as.numeric(auto$bore),lmod_oneway$res,xlab='bore')
+plot(as.numeric(auto$curb_weight),lmod_oneway$res,xlab='curb_weight')
+plot(as.numeric(auto$compression_rate),lmod_oneway$res,xlab='compression_rate')
+plot(as.numeric(auto$peak_rpm),lmod_oneway$res,xlab='peak_rpm')
+```
+There is no clear red flag. We can see there are two clear clusters with `compression_rate`,
+maybe it is better to use this covarite as categorical but this is beyond the things
+that we should try. The variance looks constant across the two clusters, so we don't need to split the samples. For `bore` and `horsepower`, the non-linear trend is obvious, the variance is larger with smaller values, so we could consider transform it. Otherwise, the model's continuous covariates are okay.
+
+```{r}
+par(mfrow=c(2,2))
+plot(auto$make,lmod_oneway$res,xlab='make')
+plot(auto$fuel_system,lmod_oneway$res,xlab='system')
+plot(auto$num_of_cylinders,lmod_oneway$res,xlab='num_of_cylinders')
+plot(auto$fuel_system,lmod_oneway$res,xlab='fuel_system')
+plot(auto$aspiration,lmod_oneway$res,xlab='aspiration')
+```
+
+The variance looks constant across different levels. 
+
+\pagebreak
+
+# 6. Transformation
+
+**Transforming covariates**
+```{r, out.width="60%"}
+plot(auto$curb_weight, auto$highway_mpg)
+```
+
+The trend is downward and we don't see obvious non-linearity. Because the `residual vs curb_weight` plot shows points agregated towards the center, we will first try square transformation, then log transformation. 
+
+```{r}
+lmod9 <- lm(formula = highway_mpg ~ make + num_of_cylinders + fuel_system + 
+    aspiration + compression_rate + bore + peak_rpm + horsepower + 
+    sqrt(curb_weight), 
+    data = auto)
+plot(sqrt(auto$curb_weight), lmod9$res)
+abline(h = 0, lty=2)
+
+lmod9b <- lm(formula = highway_mpg ~ log(curb_weight) + compression_rate + make + 
+    fuel_type + num_of_cylinders + engine_type + aspiration, 
+    data = auto)
+plot(log(auto$curb_weight), lmod9b$res)
+abline(h = 0, lty=2)
+```
+We can see curb_weight has its residual plot a lot better when using square root
+or log transformation. We will take log transformation as it is easier to interpreate.
+
+```{r}
+auto$curb_weight1 <- log(auto$curb_weight)
+```
+
+```{r}
+lmod_oneway <- lm(highway_mpg~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+bore+
+              peak_rpm+curb_weight1, auto)
+round(summary(lmod_oneway)$coefficient[34:37,],3)
+```
+
+We can see that `bore` is now not statistically siginificant, we can consider
+exclude it from the model.
+
+```{r}
+lmod_oneway <- lm(highway_mpg~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+
+              peak_rpm+curb_weight1, auto)
+round(summary(lmod_oneway)$coefficient[34:36,],3)
+anova(lmod_oneway)
+```
+
+
+**Transforming the response**
+
+SInce the residual vs fitted plot also seems introducing non-linear trend, it would be
+helpful if we could transform highway_mpg(the response variable) into something
+else. We will use Box-Cox to choose a transformation.
+```{r}
+boxcox(lmod_oneway)
+```
+
+We can see that 0 is not in 95% maximum log likelihood range, so we can use
+$\lambda=0$, which is the same as taking log transformation with `highway_mpg` 
+
+```{r}
+lmod10<- lm(log(highway_mpg) ~ make + num_of_cylinders + fuel_system + 
+    aspiration + compression_rate + peak_rpm + curb_weight1,
+    data = auto)
+round(summary(lmod10)$coefficient[34:36,],3)
+anova(lmod10)
+plot(lmod10$fitted.values, lmod10$residuals)
+```
+
+We can see we actually improved our coefficients as their p-value gets smaller,
+the residual plot looks better and we have a higher adjusted R-square. 
+We will use the log transformation of `highway_mpg`
+
+
+```{r}
+auto$highway_mpg1 <- log(auto$highway_mpg)
+```
+
+
+\pagebreak
+
+# 7. Add Interaction Term
+
+Again our model is the following:
+```{r}
+lmod_oneway <- lm(highway_mpg1~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+
+              peak_rpm+curb_weight1, auto)
+```
+
+
+Start with untransformed data. We have 7 terms, so we need to watch out for multiple testing issue. In this case we will use Bonferoni correction. We should be careful that we should only add one interaction term at a time due to the nature of F-test. If there are several
+term that meets the requirement, we will choose the one with the least p-value.
+
+```{r}
+0.05/(3*7)
+```
+
+```{r}
+anova(lmod_oneway,lm(highway_mpg1~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+
+              peak_rpm+curb_weight1
+              +make:compression_rate
+              , auto))
+```
+
+After checking all two-way terms, the least p-value for F test we found was adding the interaction term `make:peak_rpm`.
+
+**Add interaction term make:peak_rpm**
+
+```{r}
+lmod_twoway1 <- lm(highway_mpg1~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+
+              peak_rpm+curb_weight1
+              +make:compression_rate
+             , auto)
+```
+
+At each step we just repeat the same thing until every possible interaction term
+has p-value greater than the Bonferoni correction. But we need to adjust the
+Boferoni correction at each step.
+
+```{r}
+0.05/(3*7 - 1)
+```
+
+```{r}
+anova(lmod_twoway1,lm(highway_mpg1~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+
+              peak_rpm+curb_weight1
+              +make:compression_rate + make:fuel_system
+              ,auto))
+```
+
+
+After checking all two-way terms, the least p-value for F test we found was adding the interaction term `make:fuel_system`.
+
+**Add interaction term make:fuel_system**
+```{r}
+lmod_twoway2 <- lm(highway_mpg1~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+
+              peak_rpm+curb_weight1
+              +make:compression_rate + make:fuel_system
+              ,auto)
+```
+
+
+After checking all the other interaction terms, we find no other interaction term
+will improve the model in a significant way. Lets check how our model compares
+with the oneway-only model.
+
+```{r}
+lmod_twoway <- lm(highway_mpg1~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+
+              peak_rpm+curb_weight1
+              +make:compression_rate + make:fuel_system
+              ,auto)
+
+anova(lmod_oneway, lmod_twoway)
+```
+
+It is good that after adding two interaction terms, the model is significantly better than one way model, suggesting we should keep it. Let's check the residual plot.
+
+```{r}
+plot(lmod_twoway$fitted.values, lmod_twoway$residuals, main="fitted vs residuals")
+abline(h = 0, lty=2)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(auto$curb_weight1, lmod_twoway$residuals)
+plot(auto$compression_rate, lmod_twoway$residuals)
+plot(auto$peak_rpm, lmod_twoway$residuals)
+plot(as.numeric(auto$make), lmod_twoway$residuals)
+plot(as.numeric(auto$fuel_type), lmod_twoway$residuals)
+plot(as.numeric(auto$num_of_cylinders), lmod_twoway$residuals)
+plot(as.numeric(auto$engine_type), lmod_twoway$residuals)
+plot(as.numeric(auto$aspiration), lmod_twoway$residuals)
+```
+
+We can see the residual plots are improved after adding the two interaction terms, suggesting we should keep it. There is no clear indication of appearance of non-constant variance. Also, we can see the number of positive residuals and negative residuals are much even out than before.
+
+
+\pagebreak
+
+# 8. Final Model
+
+```{r}
+# Here is our final model
+# Again  note that highway_mpg1 = log(highway_mpg) and curb_weight1 = log(curb_weight)
+lmod_twoway <- lm(highway_mpg1~make+num_of_cylinders+
+              fuel_system+aspiration+compression_rate+
+              peak_rpm+curb_weight1
+              +make:compression_rate + make:fuel_system
+              ,auto)
+```
+
+**Fitted value vs Residuals**
+
+```{r}
+plot(lmod_twoway$fitted.values, lmod_twoway$residuals, main="Fitted vs Residual")
+abline(h = 0, lty=2)
+plot(lmod_twoway, which=2)
+```
+
+We are seeing many points form many "tilted lines". This is due to the nature of the data, where we have
+lots of different levels in each categorical variable, and the data we have is
+about cars, so it is likely those cars with the same make that form that
+phenomenon. 
+
+```{r}
+plot(lmod_twoway$fit,lmod_twoway$res,cex=5*hatvalues(lmod_twoway))
+```
+
+There is still some points carrying large residuals, but their leverage is not high, and 
+we do not want to over-fit the model. The variance is better than the original model, 
+so we will keep this.
+
+**Discussion**
+
+Last but not least, we should interpret this model. 
+
+```{r}
+summary(lmod_twoway)$coefficients
+```
+
+There are three continuous covariates: `peak_rpm`, `compression_rate` and `curb_weight`.
+
+Compression rate, or compression ratio, when higher, means higher combustion efficiency (from wikipedia). It makes sense that it is positively related to miles per gallon as shown by our model. 
+
+As we all know, an engine doesn't necessarily produce its best power at the peak rpm. Therefore, the peak rpm being large may suggest the inefficiency of energy usage, leading to fewer miles per gallon. This fact is also reflected by our model by a negative coefficient for covariate `peak_rpm`.
+
+The higher the curb weight is, the more energy a car consumes. It is also reflected in our model that `curb_weight` has negative relationship with the miles per gallon values. The transformation of this term may indicate the non-linear relationship between energy utility and the weight of a car, which further reflects in the transformed `highway_mpg`. 
+
+The categorical covariates included in the final model are manufacturers, number of cylinders, fuel systems, and aspiration. These are related to the hardware of a car's engine. It is easily understandable that different manufacturers produce different models, causing different mpg when driving. The fuel systems, aspiration, and number of cylinders are really hard to explain because these are the engine design and they should have effects on miles per gallon certainly. One thing we want to mention here is that we do not consider number of cylinders as a numerical covariate, but rather a categorical covariate because the numbers of cylinders in an engine are just design aspect of the engine, and a larger number does not necessarily represent better engine, or higher energy efficiency. So we treat it as categorical, to make the model more natural.
+
+All the other non-significant covariates and terms removed by us can be explained by two possible reasons: (1) essentially they do not have anything to do with miles per gallon, like the number of doors. We cannot count on these specifications to infer how good a car will behave on highway. (2) the non-significance can be explained by the connections of these covariates, and the connections are underlying the nature of vehicles. For example, a car with larger length and height is very likely to have larger weight. So the model only include one most significant term, to show the most important covariate. 
+
+The interaction terms kept here in the final model are from computation, and they can be interpreted directly by what they are. Generally speaking, even with the same fuel system built, different engines from different manufactures will definitely have different performance in energy usage. That's why `make` has two two-way interaction terms added into our model. Some makers make engines better than others, and these effects are shown with the coefficients.
+
+Since we are not expert in car engines, we cannot judge how good the model is realistically. But in the end, we can see our residual plots for fitted value looks good, in a sense that there is little indication of non-constant variance or non-linearity. Each categorical vs residual plots are showing reasonable spread of variances, meaning there is no indication of non-constant residuals. Finally, each continuous variable has reasonable
+residual plot as well.
+
+
+
+
+
